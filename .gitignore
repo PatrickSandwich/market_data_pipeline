@@ -1,0 +1,69 @@
+# --- 1. Python Core Files ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- 2. Virtual Environment ---
+venv/
+env/
+ENV/
+.venv/
+.conda/
+envs/
+
+# --- 3. IDE Specific (VSCode, PyCharm, etc.) ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.pydevproject
+
+# --- 4. Data Artifacts (Rất quan trọng - KHÔNG ĐƯA DATA LÊN GIT) ---
+data/
+# Lý do: Thư mục data/ chứa file CSV, Parquet rất nặng và thay đổi liên tục. 
+# Việc đẩy lên git sẽ làm repo chậm và gây xung đột code (merge conflict).
+
+# --- 5. Generated Reports & Logs ---
+reports/
+logs/
+*.log
+# Lý do: Đây là kết quả output (HTML, PDF, Logs). Không cần lưu phiên bản trên git.
+
+# --- 6. OS Specific (Windows, Mac) ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# --- 7. Secrets & Environment Variables ---
+.env
+*.key
+secrets.yaml
+config/secrets.yaml
+# Lý do: Chứa API keys, mật khẩu. Tuyệt đối không đẩy lên git công khai.
+
+# --- 8. Jupyter Notebook Checkpoints (Tùy chọn) ---
+.ipynb_checkpoints/
+# Nếu bạn muốn lưu lại notebooks, hãy giữ file .ipynb nhưng xóa checkpoint này đi.
