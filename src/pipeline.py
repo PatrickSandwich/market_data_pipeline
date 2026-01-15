@@ -11,6 +11,7 @@ import pandas as pd
 from src.utils.config_loader import ConfigLoader
 from src.utils.file_utils import ensure_dir
 from src.utils.logger import configure_logging, get_logger
+from src.utils.market_scanner import MarketScanner
 from src.analyzers.breadth_analyzer import BreadthAnalyzer
 from src.analyzers.fundamental_analyzer import FundamentalAnalyzer
 from src.analyzers.technical_screener import TechnicalScreener
@@ -49,6 +50,60 @@ class Pipeline:
         self.raw_dir = Path(self.config['data_paths']['raw'])
         ensure_dir(str(self.raw_dir))
 
+    def _resolve_symbols(self, symbols: Optional[List[str]] = None) -> List[str]:
+        """
+        Xác định danh sách mã chứng khoán cần xử lý theo cấu hình market_scope.
+
+        Logic:
+        - Nếu `symbols` được truyền vào (CLI/API) -> ưu tiên sử dụng.
+        - Nếu `market_scope.mode == "dynamic"` -> quét toàn thị trường qua MarketScanner.
+        - Nếu `market_scope.mode == "manual"` -> dùng `market_scope.symbols`.
+        - Fallback -> dùng `config.symbols` (tương thích ngược).
+
+        Returns:
+            Danh sách symbol đã normalize (uppercase, unique).
+
+        Raises:
+            RuntimeError: nếu mode dynamic lỗi và không có danh sách fallback hợp lệ.
+        """
+
+        if symbols:
+            return self.data_cleaner.normalize_symbols(symbols)
+
+        market_scope = self.config.get('market_scope') or {}
+        mode = str(market_scope.get('mode', 'manual')).strip().lower()
+
+        if mode == 'dynamic':
+            try:
+                scanner = MarketScanner(cache_dir=str(self.raw_dir.parent / 'cache'))
+                tickers = scanner.get_all_tickers(force_refresh=False)
+                self.logger.info(
+                    'Khởi chạy chế độ DYNAMIC - Quét toàn thị trường. Tổng số mã phát hiện: %s',
+                    len(tickers),
+                )
+                return self.data_cleaner.normalize_symbols(tickers)
+            except Exception as exc:
+                self.logger.error('Lỗi MarketScanner ở chế độ DYNAMIC: %s', exc)
+                fallback = market_scope.get('symbols') or self.config.get('symbols') or []
+                if fallback:
+                    normalized = self.data_cleaner.normalize_symbols(fallback)
+                    self.logger.warning(
+                        'Fallback sang MANUAL list do lỗi DYNAMIC. Số lượng mã: %s',
+                        len(normalized),
+                    )
+                    return normalized
+                raise RuntimeError(
+                    f'Không thể chạy DYNAMIC và không có danh sách symbols fallback: {exc}'
+                ) from exc
+
+        manual_symbols = market_scope.get('symbols') or self.config.get('symbols') or []
+        normalized = self.data_cleaner.normalize_symbols(manual_symbols)
+        self.logger.info(
+            'Khởi chạy chế độ MANUAL - Danh sách tùy chỉnh. Số lượng mã: %s',
+            len(normalized),
+        )
+        return normalized
+
     def run_daily_update(
         self,
         symbols: Optional[List[str]] = None,
@@ -56,7 +111,7 @@ class Pipeline:
     ) -> Dict[str, Any]:
         """Chạy cập nhật OHLCV hàng ngày cho các mã được cấu hình."""
 
-        target_symbols = symbols or self.config['symbols']
+        target_symbols = self._resolve_symbols(symbols)
         summary: List[Dict[str, Any]] = []
         start_date = self.config['start_date']
         end_date = self.config['end_date']
@@ -190,7 +245,7 @@ class Pipeline:
         """Chạy toàn bộ flows: daily update, breadth, fundamental, screener."""
 
         report: Dict[str, Any] = {}
-        target_symbols = symbols or self.config['symbols']
+        target_symbols = self._resolve_symbols(symbols)
         report['daily'] = self.run_daily_update(symbols=target_symbols, parallel_workers=parallel_workers)
         try:
             breadth = self.breadth_extractor.get_market_breadth()

@@ -75,12 +75,12 @@ Ghi chú:
 
 Pipeline đọc cấu hình từ `config/settings.yaml`. File này **bắt buộc** có các trường: `symbols`, `start_date`, `end_date`, `data_paths`, `logging`, `retry`.
 
-Ví dụ `config/settings.yaml`:
+Ví dụ `config/pipeline_config.yaml`:
 
 ```yaml
 symbols: ["VNM", "HPG", "FPT"]
 start_date: "2024-01-01"
-end_date: "2026-01-13"  # hoặc để ngày hiện tại trong workflow của bạn
+end_date: "2026-01-15"  # hoặc để ngày hiện tại trong workflow của bạn
 resolution: "1D"
 
 data_paths:
@@ -149,7 +149,7 @@ python scripts/export_report.py --format html --symbols all
 ```python
 from src.pipeline import Pipeline
 
-pipeline = Pipeline(config_path="config/settings.yaml")
+pipeline = Pipeline(config_path="config/pipeline_config.yaml")
 result = pipeline.run_daily_update(parallel_workers=4)
 print(result)
 ```

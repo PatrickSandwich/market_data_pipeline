@@ -88,10 +88,20 @@ class ConfigLoader:
         return result
 
     def _validate(self, config: Dict[str, Any]) -> None:
-        required_fields = ['symbols', 'start_date', 'end_date', 'data_paths', 'logging', 'retry']
+        required_fields = ['start_date', 'end_date', 'data_paths', 'logging', 'retry']
         for field in required_fields:
             if field not in config or config[field] in (None, '', []):
                 raise ConfigValidationError(f'Trường cấu hình "{field}" là bắt buộc.')
+
+        # symbols có thể đến từ:
+        # - config.symbols (tương thích ngược)
+        # - config.market_scope.symbols (manual mode)
+        if not config.get('symbols'):
+            market_scope = config.get('market_scope') or {}
+            if isinstance(market_scope, dict) and market_scope.get('symbols'):
+                config['symbols'] = market_scope.get('symbols')
+            else:
+                raise ConfigValidationError('Thiếu symbols: cần symbols hoặc market_scope.symbols.')
         if not isinstance(config['symbols'], list):
             raise ConfigValidationError('symbols phải là danh sách chuỗi.')
         if not isinstance(config['data_paths'], dict):

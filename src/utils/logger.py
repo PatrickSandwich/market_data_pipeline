@@ -137,3 +137,17 @@ def get_logger(module_name: str) -> logging.Logger:
     if _GLOBAL_CONFIG is None:
         configure_logging()
     return logging.getLogger(module_name)
+
+
+def setup_logger(
+    module_name: str,
+    log_dir: str = 'logs',
+    log_filename: str = 'app.log',
+    level: str = 'INFO',
+) -> logging.Logger:
+    """Thiết lập logging (nếu chưa) và trả về logger theo module."""
+
+    global _GLOBAL_CONFIG
+    if _GLOBAL_CONFIG is None:
+        configure_logging(log_dir=log_dir, log_filename=log_filename, level=level)
+    return get_logger(module_name)

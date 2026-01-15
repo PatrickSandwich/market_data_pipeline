@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         '--config',
-        default='config/settings.yaml',
+        default='config/pipeline_config.yaml',
         help='Đường dẫn config YAML',
     )
     return parser

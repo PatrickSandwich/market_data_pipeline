@@ -1,0 +1,24 @@
+market_scope:
+  mode: "dynamic"  # "dynamic" = quét tự động, "manual" = dùng list symbols
+  symbols:
+    - VNM
+    - MWG
+
+# (Optional) Giữ tương thích ngược với các module cũ
+symbols:
+  - VNM
+  - MWG
+
+start_date: "2024-01-01"
+end_date: "2026-01-15"
+resolution: "1D"
+
+data_paths:
+  raw: "data/raw/ohlcv"
+  processed: "data/processed"
+
+logging:
+  level: "INFO"
+  dir: "logs"
+
+retry: 3

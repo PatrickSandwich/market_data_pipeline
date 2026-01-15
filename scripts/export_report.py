@@ -24,7 +24,7 @@ def _ensure_utf8_console() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Export báo cáo từ dữ liệu processed')
-    parser.add_argument('--config', default='config/settings.yaml', help='Đường dẫn config YAML')
+    parser.add_argument('--config', default='config/pipeline_config.yaml', help='Đường dẫn config YAML')
     parser.add_argument('--symbols', default='all', help="Danh sách mã comma-separated hoặc 'all'")
     parser.add_argument('--format', default='markdown', choices=['markdown', 'html', 'pdf'], help='Định dạng output')
     parser.add_argument('--output', default=None, help='Đường dẫn file output (tự động đặt tên nếu bỏ trống)')
