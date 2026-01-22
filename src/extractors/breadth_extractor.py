@@ -22,7 +22,8 @@ class BreadthExtractor(BaseExtractor):
     def extract(self, task: ExtractionTask) -> TaskResult:
         """Chạy task breadth tùy theo `data_type`."""
 
-        self.logger.info('Breadth extract %s (%s)', task.symbol, task.data_type)
+        self.logger.info('Breadth extract %s (%s)',
+                         task.symbol, task.data_type)
         start_time = time.monotonic()
         loader: Optional[pd.DataFrame] = None
         try:
@@ -34,7 +35,8 @@ class BreadthExtractor(BaseExtractor):
             elif data_type == 'foreign_trading':
                 loader = self.get_foreign_trading()
             else:
-                raise ValueError(f'Unsupported breadth data_type: {task.data_type}')
+                raise ValueError(
+                    f'Unsupported breadth data_type: {task.data_type}')
 
             if loader is None:
                 loader = pd.DataFrame()
@@ -55,7 +57,8 @@ class BreadthExtractor(BaseExtractor):
                 execution_time=execution_time,
             )
         except Exception as exc:
-            self.logger.error('Breadth extractor thất bại %s: %s', task.symbol, exc)
+            self.logger.error(
+                'Breadth extractor thất bại %s: %s', task.symbol, exc)
             execution_time = time.monotonic() - start_time
             return TaskResult(
                 task_id=task.task_id,
@@ -70,8 +73,9 @@ class BreadthExtractor(BaseExtractor):
     def get_market_breadth(self) -> pd.DataFrame:
         """Lấy các chỉ số breadth hàng ngày cho thị trường."""
 
-        quote = Quote(source='vci')
-        raw = self._call_quote_method(quote, ['market_breadth', 'breadth', 'advance_decline'])
+        quote = Quote(symbol='VNINDEX', source='vci')
+        raw = self._call_quote_method(
+            quote, ['market_breadth', 'breadth', 'advance_decline'])
         df = self._normalize_dataframe(raw)
         if df.empty:
             self.logger.warning('Không có dữ liệu market breadth hiện tại.')
@@ -102,7 +106,8 @@ class BreadthExtractor(BaseExtractor):
         quote = Quote(source='vci')
         raw = self._call_quote_method(
             quote,
-            ['sector_performance', 'industry_performance', 'market_index_performance'],
+            ['sector_performance', 'industry_performance',
+                'market_index_performance'],
         )
         df = self._normalize_dataframe(raw)
         if df.empty:
@@ -123,7 +128,8 @@ class BreadthExtractor(BaseExtractor):
                     self.logger.debug('Method %s thất bại: %s', name, exc)
             elif attr is not None:
                 return attr
-        self.logger.warning('Không tìm thấy method breadth trong vnstock: %s', names)
+        self.logger.warning(
+            'Không tìm thấy method breadth trong vnstock: %s', names)
         return None
 
     def _normalize_dataframe(self, raw: Any) -> pd.DataFrame:
@@ -140,11 +146,14 @@ class BreadthExtractor(BaseExtractor):
     def _normalize_market_breadth(self, df: pd.DataFrame) -> pd.DataFrame:
         """Đảm bảo các cột breadth và tính toán các chỉ số bổ sung."""
 
-        df = df.rename(columns={col: col.strip().lower() for col in df.columns})
-        df['date'] = pd.to_datetime(df.get('date') or df.get('day'), errors='coerce')
+        df = df.rename(columns={col: col.strip().lower()
+                       for col in df.columns})
+        df['date'] = pd.to_datetime(
+            df.get('date') or df.get('day'), errors='coerce')
         if df['date'].isna().all():
             self.logger.warning('Dữ liệu breadth không có ngày hợp lệ.')
-        numeric_cols = ['advancers', 'decliners', 'unchanged', 'new_highs', 'new_lows']
+        numeric_cols = ['advancers', 'decliners',
+                        'unchanged', 'new_highs', 'new_lows']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -153,17 +162,20 @@ class BreadthExtractor(BaseExtractor):
         df['advancers'] = df['advancers'].fillna(0)
         df['decliners'] = df['decliners'].fillna(0)
         df['unchanged'] = df['unchanged'].fillna(0)
-        df['total_issues'] = df['advancers'] + df['decliners'] + df['unchanged']
+        df['total_issues'] = df['advancers'] + \
+            df['decliners'] + df['unchanged']
         if 'breadth_percent' not in df.columns:
             df['breadth_percent'] = (
-                (df['advancers'] - df['decliners']) / df['total_issues'].replace(0, pd.NA)
+                (df['advancers'] - df['decliners']) /
+                df['total_issues'].replace(0, pd.NA)
             ) * 100
         df['adv_dec_ratio'] = (
             df['advancers'] / df['decliners'].replace({0: pd.NA})
         ).fillna(0)
         df['breadth_percent'] = df['breadth_percent'].clip(-100.0, 100.0)
         if (df['breadth_percent'].abs() > 100.0).any():
-            self.logger.warning('breadth_percent vượt ngưỡng 100%%: %s', df['breadth_percent'])
+            self.logger.warning(
+                'breadth_percent vượt ngưỡng 100%%: %s', df['breadth_percent'])
         if 'percent_above_ma20' not in df.columns:
             df['percent_above_ma20'] = pd.NA
         if 'percent_above_ma50' not in df.columns:
@@ -175,9 +187,12 @@ class BreadthExtractor(BaseExtractor):
     def _normalize_foreign_trading(self, df: pd.DataFrame) -> pd.DataFrame:
         """Chuẩn hóa bảng dữ liệu giao dịch nước ngoài."""
 
-        df = df.rename(columns={col: col.strip().lower() for col in df.columns})
-        df['date'] = pd.to_datetime(df.get('date') or df.get('day'), errors='coerce')
-        numeric_cols = ['net_buy', 'net_sell', 'value_buy', 'value_sell', 'volume']
+        df = df.rename(columns={col: col.strip().lower()
+                       for col in df.columns})
+        df['date'] = pd.to_datetime(
+            df.get('date') or df.get('day'), errors='coerce')
+        numeric_cols = ['net_buy', 'net_sell',
+                        'value_buy', 'value_sell', 'volume']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -188,12 +203,16 @@ class BreadthExtractor(BaseExtractor):
     def _normalize_sector_performance(self, df: pd.DataFrame) -> pd.DataFrame:
         """Chuẩn hóa dữ liệu hiệu suất ngành."""
 
-        df = df.rename(columns={col: col.strip().lower() for col in df.columns})
-        df['sector'] = df.get('sector') or df.get('industry') or df.get('index')
+        df = df.rename(columns={col: col.strip().lower()
+                       for col in df.columns})
+        df['sector'] = df.get('sector') or df.get(
+            'industry') or df.get('index')
         df['sector'] = df['sector'].astype(str)
-        df['change_pct'] = pd.to_numeric(df.get('change_pct') or df.get('change') or df.get('percent'), errors='coerce')
+        df['change_pct'] = pd.to_numeric(df.get('change_pct') or df.get(
+            'change') or df.get('percent'), errors='coerce')
         df['volume'] = pd.to_numeric(df.get('volume'), errors='coerce')
-        df['market_cap'] = pd.to_numeric(df.get('market_cap') or df.get('capitalization'), errors='coerce')
+        df['market_cap'] = pd.to_numeric(
+            df.get('market_cap') or df.get('capitalization'), errors='coerce')
         df['date'] = pd.to_datetime(df.get('date'), errors='coerce')
         df = df.dropna(subset=['sector'])
         df = df.sort_values(by='change_pct', ascending=False)

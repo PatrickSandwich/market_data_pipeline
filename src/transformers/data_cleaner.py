@@ -161,7 +161,8 @@ class DataCleaner:
             if not raw:
                 continue
             sym = raw.strip().upper()
-            if not re.match(r'^[A-Z]{3,4}$', sym):
+            # VN tickers có thể chứa số (ví dụ: A32), nên cho phép A-Z và 0-9.
+            if not re.match(r'^[A-Z0-9]{3,5}$', sym):
                 raise ValueError(f'Symbol không đúng chuẩn VN: {raw}')
             if sym not in cleaned:
                 cleaned.append(sym)

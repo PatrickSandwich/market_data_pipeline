@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_true',
         help='Chạy 1 lần rồi thoát (dùng để test)',
     )
+    parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Bỏ qua cache (đặc biệt cache Market Scanner tickers) và gọi API mới',
+    )
     return parser
 
 
@@ -64,6 +69,8 @@ def main() -> int:
 
     if args.parallel is not None and args.parallel < 1:
         raise SystemExit('--parallel phải >= 1')
+    if args.force_refresh:
+        os.environ['MDP_FORCE_REFRESH'] = '1'
 
     from src.utils.logger import configure_logging, get_logger
     from src.pipeline import Pipeline

@@ -1,8 +1,29 @@
 market_scope:
   mode: "dynamic"  # "dynamic" = quét tự động, "manual" = dùng list symbols
+  scope: "hsx_only"    # "all" | "core" | "hsx_only" | "hsx_hnx"
   symbols:
     - VNM
     - MWG
+
+# ============================================
+# MARKET SCOPE FILTER CONFIGURATION
+# ============================================
+market_scope_settings:
+  upcom_max_symbols: 50
+  upcom_sort_by: "avg_value"
+  include_exchanges:
+    all: ["HSX", "HNX", "UPCOM"]
+    core: ["HSX", "HNX", "UPCOM"]
+    hsx_only: ["HSX"]
+    hsx_hnx: ["HSX", "HNX"]
+
+# ============================================
+# PERFORMANCE SETTINGS
+# ============================================
+performance:
+  max_concurrent_requests: 10
+  api_timeout: 30
+  max_retries: 3
 
 # (Optional) Giữ tương thích ngược với các module cũ
 symbols:

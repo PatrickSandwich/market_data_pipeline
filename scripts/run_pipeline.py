@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         help='Số workers cho parallel execution (>= 1)',
     )
     parser.add_argument(
+        '--force-refresh',
+        action='store_true',
+        help='Bỏ qua cache (đặc biệt cache Market Scanner tickers) và gọi API mới',
+    )
+    parser.add_argument(
         '--config',
         default='config/pipeline_config.yaml',
         help='Đường dẫn config YAML',
@@ -89,6 +94,8 @@ def main() -> int:
     if args.date:
         os.environ['MDP_START_DATE'] = args.date
         os.environ['MDP_END_DATE'] = args.date
+    if args.force_refresh:
+        os.environ['MDP_FORCE_REFRESH'] = '1'
 
     from src.pipeline import Pipeline
 
@@ -101,12 +108,20 @@ def main() -> int:
         result = pipeline.run_full_pipeline(symbols=symbols, parallel_workers=args.parallel)
     elif args.mode == 'analysis':
         if symbols is None:
-            symbols = pipeline.config['symbols']
-        result = pipeline.run_batch_analysis(symbols=symbols, analysis_types=['technical', 'fundamental', 'breadth'])
+            symbols = pipeline._resolve_symbols(None)
+        result = pipeline.run_batch_analysis(
+            symbols=symbols, analysis_types=['technical', 'fundamental', 'breadth']
+        )
     elif args.mode == 'validate':
         if symbols is None:
-            symbols = pipeline.config['symbols']
-        validations = {sym: pipeline.validate_data_quality(sym) for sym in symbols}
+            symbols = pipeline._resolve_symbols(None)
+        validations = {}
+        for sym in symbols:
+            try:
+                validations[sym] = pipeline.validate_data_quality(sym)
+            except Exception as exc:
+                sys.stderr.write(f'[WARN] Validate failed {sym}: {exc}\n')
+                validations[sym] = {'error': str(exc)}
         result = {'validations': validations}
     else:
         raise SystemExit(f'Unsupported mode: {args.mode}')

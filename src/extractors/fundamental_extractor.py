@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import inspect
+import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 import pandas as pd
+import vnstock
 from vnstock import Quote
 
 from src.utils.decorators import safe_execute
@@ -19,20 +28,42 @@ class FundamentalExtractor(BaseExtractor):
 
     name = 'fundamental_extractor'
     supported_data_types = ['financial', 'company_info', 'dividend', 'events']
-    default_config: Dict[str, Any] = {'config': {}, 'data_type': 'financial'}
+    default_config: Dict[str, Any] = {
+        'config': {
+            'period': 'quarterly',
+            'get_all': True,
+            'report_type_code': None,
+        },
+        'data_type': 'financial',
+    }
 
     def extract(self, task: ExtractionTask) -> TaskResult:
         """Chạy task fundamental dựa trên data_type và report_type."""
 
         data_type = task.data_type.lower()
-        report_type = task.config.get('report_type', 'income_statement')
-        self.logger.info('Fundamental extract %s (%s, %s)', task.symbol, data_type, report_type)
+        statement = task.config.get('report_type', 'income_statement')
+        period = task.config.get('period', 'quarterly')
+        get_all = task.config.get('get_all', True)
+        report_type_code = task.config.get('report_type_code')
+        self.logger.info(
+            'Fundamental extract %s (%s, %s, %s)',
+            task.symbol,
+            data_type,
+            statement,
+            period,
+        )
         start_time = datetime.utcnow()
         try:
             if data_type == 'financial':
                 data = self._cache_fetch(
-                    f'financial:{task.symbol}:{report_type}',
-                    lambda: self.get_financial_report(task.symbol, report_type),
+                    f'financial:{task.symbol}:{statement}:{period}:{get_all}:{report_type_code}',
+                    lambda: self.get_financial_report(
+                        task.symbol,
+                        report_type=statement,
+                        period=period,
+                        get_all=get_all,
+                        report_type_code=report_type_code,
+                    ),
                 )
             elif data_type == 'company_info':
                 data = self._cache_fetch(
@@ -99,40 +130,191 @@ class FundamentalExtractor(BaseExtractor):
         FUNDAMENTAL_CACHE[key] = (now, payload)
         return payload
 
-    def get_financial_report(self, symbol: str, report_type: str = 'income_statement') -> pd.DataFrame:
-        """Lấy báo cáo tài chính: income_statement, balance_sheet hoặc cash_flow."""
+    def get_financial_report(
+        self,
+        symbol: str,
+        report_type: str = 'income_statement',
+        period: str = 'quarterly',
+        get_all: bool = True,
+        report_type_code: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Lấy báo cáo tài chính từ vnstock v3: income_statement, balance_sheet, cash_flow.
 
-        quote = Quote(symbol=symbol, source='vci')
-        report_type = report_type.lower()
-        method_map = {
-            'income_statement': ['income_statement', 'income_statement_quarterly', 'income_statement_annual', 'financials'],
-            'balance_sheet': ['balance_sheet', 'balance_sheet_quarterly', 'balance_sheet_annual'],
-            'cash_flow': ['cash_flow', 'cash_flow_quarterly', 'cash_flow_annual'],
-        }
-        candidates = method_map.get(report_type, method_map['income_statement'])
-        result = self._attempt_methods(quote, candidates)
-        if result is None:
-            raise ValueError(f'Không lấy được báo cáo {report_type} cho {symbol}')
-        df = self._to_dataframe(result)
-        df = self._validate_financial_report(df)
-        return df
+        Args:
+            symbol: Mã chứng khoán (VD: VNM)
+            report_type: Loại báo cáo tài chính (income_statement/balance_sheet/cash_flow)
+            period: Kỳ báo cáo (quarterly/annual)
+            get_all: True = lấy tất cả kỳ, False = chỉ kỳ gần nhất
+            report_type_code: Mã loại báo cáo (nếu API hỗ trợ), VD: Q1/Q2/Q3/Q4/Y
+
+        Returns:
+            DataFrame báo cáo tài chính; DataFrame rỗng nếu không có dữ liệu hoặc lỗi.
+        """
+
+        statement = (report_type or 'income_statement').strip().lower()
+        if statement in {'income', 'income_statement', 'is'}:
+            return self.get_income_statement(
+                symbol=symbol,
+                period=period,
+                get_all=get_all,
+                report_type=report_type_code,
+            )
+        if statement in {'balance', 'balance_sheet', 'bs'}:
+            return self.get_balance_sheet(
+                symbol=symbol,
+                period=period,
+                get_all=get_all,
+                report_type=report_type_code,
+            )
+        if statement in {'cash_flow', 'cashflow', 'cf'}:
+            return self.get_cash_flow(
+                symbol=symbol,
+                period=period,
+                get_all=get_all,
+                report_type=report_type_code,
+            )
+
+        self.logger.warning(
+            'report_type=%s không hợp lệ, fallback sang income_statement (%s)',
+            report_type,
+            symbol,
+        )
+        return self.get_income_statement(
+            symbol=symbol,
+            period=period,
+            get_all=get_all,
+            report_type=report_type_code,
+        )
+
+    def get_income_statement(
+        self,
+        symbol: str,
+        period: str = 'quarterly',
+        get_all: bool = True,
+        report_type: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Lấy Income Statement theo cú pháp vnstock v3 (module vnstock.financial).
+
+        Args:
+            symbol: Mã chứng khoán
+            period: quarterly/annual
+            get_all: True = lấy tất cả kỳ
+            report_type: Loại báo cáo (nếu API hỗ trợ), VD: Q1/Q2/Q3/Q4/Y
+
+        Returns:
+            DataFrame Income Statement hoặc DataFrame rỗng nếu lỗi/không có dữ liệu.
+        """
+
+        return self._fetch_financial_statement(
+            method_name='income_statement',
+            symbol=symbol,
+            period=period,
+            get_all=get_all,
+            report_type=report_type,
+        )
+
+    def get_balance_sheet(
+        self,
+        symbol: str,
+        period: str = 'quarterly',
+        get_all: bool = True,
+        report_type: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Lấy Balance Sheet theo cú pháp vnstock v3.
+
+        Args:
+            symbol: Mã chứng khoán
+            period: quarterly/annual
+            get_all: True = lấy tất cả kỳ
+            report_type: Loại báo cáo (nếu API hỗ trợ), VD: Q1/Q2/Q3/Q4/Y
+
+        Returns:
+            DataFrame Balance Sheet hoặc DataFrame rỗng nếu lỗi/không có dữ liệu.
+        """
+
+        return self._fetch_financial_statement(
+            method_name='balance_sheet',
+            symbol=symbol,
+            period=period,
+            get_all=get_all,
+            report_type=report_type,
+        )
+
+    def get_cash_flow(
+        self,
+        symbol: str,
+        period: str = 'quarterly',
+        get_all: bool = True,
+        report_type: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Lấy Cash Flow theo cú pháp vnstock v3.
+
+        Args:
+            symbol: Mã chứng khoán
+            period: quarterly/annual
+            get_all: True = lấy tất cả kỳ
+            report_type: Loại báo cáo (nếu API hỗ trợ), VD: Q1/Q2/Q3/Q4/Y
+
+        Returns:
+            DataFrame Cash Flow hoặc DataFrame rỗng nếu lỗi/không có dữ liệu.
+        """
+
+        return self._fetch_financial_statement(
+            method_name='cash_flow',
+            symbol=symbol,
+            period=period,
+            get_all=get_all,
+            report_type=report_type,
+        )
 
     def get_financial_ratios(self, symbol: str, period: str = 'quarterly') -> pd.DataFrame:
-        """Lấy các chỉ số tài chính (PE, PB, ROE, ROA, ROIC, EPS, BVPS)."""
+        """
+        Lấy các chỉ số tài chính theo cú pháp vnstock v3 (vnstock.financial.ratio).
 
-        quote = Quote(symbol=symbol, source='vci')
-        ratios = self._attempt_methods(quote, ['financial_ratios', 'ratios', 'fundamental_ratios'])
-        if ratios is None:
-            raise ValueError(f'Không có ratios cho {symbol}')
-        df = self._to_dataframe(ratios)
-        numeric_cols = ['pe', 'pb', 'ps', 'roe', 'roa', 'roic', 'eps', 'bvps']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        df = df.dropna(subset=[col for col in numeric_cols if col in df.columns])
-        if df.empty:
-            raise ValueError(f'Dữ liệu ratios không đủ cho {symbol}')
-        return df
+        Args:
+            symbol: Mã chứng khoán
+            period: quarterly/annual
+
+        Returns:
+            DataFrame ratios hoặc DataFrame rỗng nếu lỗi/không có dữ liệu.
+        """
+
+        symbol_normalized = self._normalize_symbol(symbol)
+        try:
+            financial = getattr(vnstock, 'financial', None)
+            func = getattr(financial, 'ratio', None) if financial is not None else None
+            if callable(func):
+                raw = self._call_with_supported_kwargs(
+                    func,
+                    {
+                        'symbol': symbol_normalized,
+                        'period': period,
+                    },
+                )
+            else:
+                self.logger.debug(
+                    'vnstock.financial.ratio không khả dụng, fallback qua Quote (%s)',
+                    symbol_normalized,
+                )
+                quote = Quote(symbol=symbol_normalized, source='vci')
+                raw = self._attempt_methods(quote, ['financial_ratios', 'ratios', 'fundamental_ratios'])
+            df = self._to_dataframe(raw)
+            df = df.rename(columns={col: col.strip().lower() for col in df.columns})
+            numeric_cols = ['pe', 'pb', 'ps', 'roe', 'roa', 'roic', 'eps', 'bvps']
+            for col in numeric_cols:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            if df.empty:
+                self.logger.warning('Không có dữ liệu ratios cho %s', symbol_normalized)
+                return pd.DataFrame()
+            return df
+        except Exception as exc:
+            self.logger.error('Lỗi khi lấy ratios %s: %s', symbol_normalized, exc)
+            return pd.DataFrame()
 
     def get_company_overview(self, symbol: str) -> Dict[str, Any]:
         """Lấy thông tin công ty: tên, ngành, sàn, vốn hóa, cổ phiếu lưu hành."""
@@ -172,6 +354,140 @@ class FundamentalExtractor(BaseExtractor):
             df['date'] = pd.to_datetime(df['date'], errors='coerce')
         return df
 
+    def _fetch_financial_statement(
+        self,
+        method_name: str,
+        symbol: str,
+        period: str = 'quarterly',
+        get_all: bool = True,
+        report_type: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        Wrapper an toàn để gọi vnstock.financial.* và chuẩn hóa kết quả.
+
+        Xử lý các tình huống:
+        - Mã mới niêm yết chưa có báo cáo (DataFrame rỗng/None)
+        - Mã không tồn tại / API lỗi
+        - Lỗi mạng (bị raise exception)
+        """
+
+        symbol_normalized = self._normalize_symbol(symbol)
+        period_normalized = (period or 'quarterly').strip().lower()
+
+        if period_normalized not in {'quarterly', 'annual'}:
+            self.logger.warning(
+                'period=%s không hợp lệ, fallback sang quarterly (%s)',
+                period,
+                symbol_normalized,
+            )
+            period_normalized = 'quarterly'
+
+        try:
+            raw: Any
+            financial = getattr(vnstock, 'financial', None)
+            func = getattr(financial, method_name, None) if financial is not None else None
+            if callable(func):
+                raw = self._call_with_supported_kwargs(
+                    func,
+                    {
+                        'symbol': symbol_normalized,
+                        'period': period_normalized,
+                        'get_all': bool(get_all),
+                        'report_type': report_type,
+                    },
+                )
+            else:
+                self.logger.debug(
+                    'vnstock.financial.%s không khả dụng, fallback qua Quote cho %s',
+                    method_name,
+                    symbol_normalized,
+                )
+                raw = self._fetch_statement_via_quote(
+                    method_name=method_name,
+                    symbol=symbol_normalized,
+                    period=period_normalized,
+                )
+
+            if raw is None:
+                self.logger.warning(
+                    'API trả về None cho %s (%s, %s)',
+                    symbol_normalized,
+                    method_name,
+                    period_normalized,
+                )
+                return pd.DataFrame()
+
+            df = self._to_dataframe(raw)
+            if df.empty:
+                self.logger.warning(
+                    'Không có dữ liệu %s cho %s (có thể mã mới niêm yết hoặc thiếu báo cáo)',
+                    method_name,
+                    symbol_normalized,
+                )
+                return df
+
+            df = self._validate_financial_report(df)
+            missing = self._check_income_statement_columns_if_needed(method_name, df)
+            if missing:
+                self.logger.warning(
+                    'Dữ liệu %s của %s thiếu cột quan trọng: %s',
+                    method_name,
+                    symbol_normalized,
+                    ', '.join(sorted(missing)),
+                )
+
+            self.logger.info(
+                'Đã lấy %s cho %s: %s rows (%s)',
+                method_name,
+                symbol_normalized,
+                len(df),
+                period_normalized,
+            )
+            return df
+        except Exception as exc:
+            self.logger.error(
+                'Lỗi khi gọi vnstock.financial.%s cho %s: %s',
+                method_name,
+                symbol_normalized,
+                exc,
+            )
+            return pd.DataFrame()
+
+    def _fetch_statement_via_quote(self, method_name: str, symbol: str, period: str) -> Any:
+        """Fallback lấy báo cáo qua Quote cho các phiên bản vnstock không có vnstock.financial."""
+
+        quote = Quote(symbol=symbol, source='vci')
+        candidates_map = {
+            'income_statement': [
+                'income_statement',
+                'income_statement_quarterly',
+                'income_statement_annual',
+                'financials',
+            ],
+            'balance_sheet': [
+                'balance_sheet',
+                'balance_sheet_quarterly',
+                'balance_sheet_annual',
+            ],
+            'cash_flow': [
+                'cash_flow',
+                'cash_flow_quarterly',
+                'cash_flow_annual',
+            ],
+        }
+        candidates = candidates_map.get(method_name, candidates_map['income_statement'])
+        if period == 'annual':
+            candidates = [name for name in candidates if 'annual' in name] + candidates
+        return self._attempt_methods(quote, candidates)
+
+    def _call_with_supported_kwargs(self, func: Any, kwargs: Dict[str, Any]) -> Any:
+        """Chỉ truyền các kwargs mà function signature hỗ trợ để tránh crash do lệch phiên bản."""
+
+        signature = inspect.signature(func)
+        supported = set(signature.parameters.keys())
+        filtered = {key: value for key, value in kwargs.items() if key in supported and value is not None}
+        return func(**filtered)
+
     def _attempt_methods(self, quote: Quote, method_names: List[str]) -> Optional[Any]:
         """Cố gắng gọi tuần tự các method để tương thích nhiều phiên bản vnstock."""
 
@@ -201,11 +517,36 @@ class FundamentalExtractor(BaseExtractor):
         """Đảm bảo dữ liệu báo cáo tài chính đầy đủ và sạch."""
 
         df = df.rename(columns={col: col.strip().lower() for col in df.columns})
-        numeric_columns = [col for col in df.columns if col not in {'report_type', 'period'}]
-        df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
+        non_numeric = {
+            'ticker',
+            'symbol',
+            'time',
+            'date',
+            'quarter',
+            'year',
+            'report_type',
+            'period',
+        }
+        numeric_columns = [col for col in df.columns if col not in non_numeric]
+        if numeric_columns:
+            df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
         if df.empty:
             raise ValueError('Báo cáo tài chính không có dữ liệu hợp lệ')
         return df
+
+    def _check_income_statement_columns_if_needed(self, method_name: str, df: pd.DataFrame) -> List[str]:
+        """Kiểm tra nhẹ các cột thường dùng; chỉ warning để không làm gãy pipeline."""
+
+        if method_name != 'income_statement':
+            return []
+        required_columns = {'time', 'revenue', 'profit', 'eps'}
+        missing = [col for col in required_columns if col not in df.columns]
+        return missing
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Chuẩn hóa mã chứng khoán (strip + upper)."""
+
+        return (symbol or '').strip().upper()
 
     def _normalize_dict(self, payload: Any) -> Dict[str, Any]:
         """Chuẩn hóa dict bằng cách hạ cột và convert số."""

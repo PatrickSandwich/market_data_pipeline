@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime, date
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from vnstock import listing_companies  # type: ignore
@@ -35,7 +35,12 @@ class MarketScanner:
         self.logger = setup_logger(self.__class__.__name__)
         self._last_raw_data: Optional[List[Dict]] = None
 
-    def get_all_tickers(self, force_refresh: bool = False) -> List[str]:
+    def get_all_tickers(
+        self,
+        force_refresh: bool = False,
+        exchanges: Optional[List[str]] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
         """
         Trả về danh sách mã chứng khoán (đã lọc & sort).
 
@@ -47,6 +52,10 @@ class MarketScanner:
 
         Args:
             force_refresh: Bỏ qua cache và gọi API mới.
+            exchanges: Danh sách sàn cần lấy (VD: ["HOSE", "HNX", "UPCOM"]). Nếu nguồn dữ liệu có field sàn, sẽ lọc theo sàn.
+            filters: Bộ lọc tuỳ chọn. Hỗ trợ keys:
+                - exclude_etf: bool (mặc định True)
+                - exclude_suspended: bool (mặc định True)
 
         Returns:
             Danh sách mã chứng khoán (unique, sorted A-Z).
@@ -60,7 +69,12 @@ class MarketScanner:
 
         try:
             tickers = self._fetch_from_api()
-            tickers = self._filter_tickers(tickers, raw_data=self._last_raw_data)
+            tickers = self._filter_tickers(
+                tickers,
+                raw_data=self._last_raw_data,
+                exchanges=exchanges,
+                filters=filters,
+            )
             # Dùng set() để loại bỏ trùng lặp và sort alphabet trước khi trả về
             tickers = sorted(set(tickers))
             if not tickers:
@@ -224,22 +238,37 @@ class MarketScanner:
                     break
         return tickers
 
-    def _filter_tickers(self, tickers: List[str], raw_data: Optional[List[Dict]] = None) -> List[str]:
+    def _filter_tickers(
+        self,
+        tickers: List[str],
+        raw_data: Optional[List[Dict]] = None,
+        exchanges: Optional[List[str]] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
         """
         Lọc danh sách tickers:
         - Loại ETF theo prefix (VF, FUE, E1VF, SSV)
         - Loại mã không hoạt động nếu có field `status`
+        - (Tuỳ chọn) Lọc theo sàn nếu có field sàn trong raw_data
 
         Args:
             tickers: Danh sách ticker đầu vào.
             raw_data: Dữ liệu thô từ API (nếu có) để dùng lọc theo status.
+            exchanges: Danh sách sàn cần giữ lại (nếu có).
+            filters: Bộ lọc tuỳ chọn.
 
         Returns:
             Danh sách ticker đã lọc.
         """
 
+        filters = filters or {}
+        exclude_etf = bool(filters.get('exclude_etf', True))
+        exclude_suspended = bool(filters.get('exclude_suspended', True))
+
         etf_prefixes = ('VF', 'FUE', 'E1VF', 'SSV')
-        etf_filtered = [t for t in tickers if not t.startswith(etf_prefixes)]
+        etf_filtered = tickers
+        if exclude_etf:
+            etf_filtered = [t for t in tickers if not t.startswith(etf_prefixes)]
 
         if not raw_data:
             return etf_filtered
@@ -249,6 +278,8 @@ class MarketScanner:
         inactive_keywords = {'delist', 'inactive', 'suspended', 'halt', 'stop'}
         active: List[str] = []
         status_map: Dict[str, str] = {}
+        exchange_map: Dict[str, str] = {}
+        normalized_exchanges = self._normalize_exchanges(exchanges)
         for item in raw_data:
             symbol = None
             for key in ['symbol', 'ticker', 'code', 'stock_code']:
@@ -261,13 +292,59 @@ class MarketScanner:
             if isinstance(status_val, str):
                 status_map[symbol] = status_val.strip().lower()
 
+            raw_exchange = self._extract_exchange(item)
+            if raw_exchange:
+                exchange_map[symbol] = raw_exchange
+
         for ticker in etf_filtered:
+            if normalized_exchanges:
+                ex = exchange_map.get(ticker)
+                if ex and ex not in normalized_exchanges:
+                    continue
             status = status_map.get(ticker)
-            if status and any(k in status for k in inactive_keywords):
+            if exclude_suspended and status and any(k in status for k in inactive_keywords):
                 continue
             active.append(ticker)
 
         return active
+
+    def _extract_exchange(self, record: Dict[str, Any]) -> Optional[str]:
+        """
+        Cố gắng lấy thông tin sàn từ record (nếu có).
+
+        Vì key có thể thay đổi theo phiên bản vnstock, thử các key phổ biến và normalize:
+        - exchange, market, board, floor, exch
+        """
+
+        for key in ['exchange', 'market', 'board', 'floor', 'exch']:
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().upper()
+        return None
+
+    def _normalize_exchanges(self, exchanges: Optional[List[str]]) -> List[str]:
+        """Normalize danh sách sàn đầu vào về dạng uppercase và mapping các alias phổ biến."""
+
+        if not exchanges:
+            return []
+        alias_map = {
+            'HSX': 'HOSE',
+            'HOSE': 'HOSE',
+            'HNX': 'HNX',
+            'UPCOM': 'UPCOM',
+            'UPCOM.': 'UPCOM',
+            'UPCOM ': 'UPCOM',
+            'UPCOMM': 'UPCOM',
+        }
+        normalized: List[str] = []
+        for ex in exchanges:
+            if not isinstance(ex, str):
+                continue
+            key = ex.strip().upper()
+            if not key:
+                continue
+            normalized.append(alias_map.get(key, key))
+        return sorted(set(normalized))
 
     def _save_cache(self, tickers: List[str]) -> bool:
         """

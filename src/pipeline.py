@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -15,9 +16,11 @@ from src.utils.market_scanner import MarketScanner
 from src.analyzers.breadth_analyzer import BreadthAnalyzer
 from src.analyzers.fundamental_analyzer import FundamentalAnalyzer
 from src.analyzers.technical_screener import TechnicalScreener
+from src.scanners.market_scope_filter import MarketScopeConfig, MarketScopeFilter
 from src.extractors.fundamental_extractor import FundamentalExtractor
 from src.extractors.price_extractor import PriceExtractor
 from src.extractors.breadth_extractor import BreadthExtractor
+from src.extractors.data_validator import validate_and_filter_symbols
 from src.extractors.models import ExtractionTask
 from src.transformers.data_cleaner import DataCleaner
 from src.transformers.technical_indicators import TechnicalIndicators
@@ -68,41 +71,134 @@ class Pipeline:
         """
 
         if symbols:
-            return self.data_cleaner.normalize_symbols(symbols)
+            valid_symbols, removed = validate_and_filter_symbols(symbols)
+            for item in removed:
+                self.logger.warning(
+                    'Bỏ qua symbol %s: %s', item.get('symbol'), item.get('reason')
+                )
+            if not valid_symbols:
+                raise ValueError('Không có symbol hợp lệ từ tham số đầu vào.')
+            return valid_symbols
 
-        market_scope = self.config.get('market_scope') or {}
-        mode = str(market_scope.get('mode', 'manual')).strip().lower()
+        raw_market_scope = self.config.get('market_scope')
+        market_scope = raw_market_scope if isinstance(raw_market_scope, dict) else {}
+        default_mode = 'dynamic' if isinstance(raw_market_scope, str) else 'manual'
+        mode = str(market_scope.get('mode', default_mode)).strip().lower()
 
         if mode == 'dynamic':
             try:
-                scanner = MarketScanner(cache_dir=str(self.raw_dir.parent / 'cache'))
-                tickers = scanner.get_all_tickers(force_refresh=False)
+                force_refresh = bool(
+                    str(os.getenv('MDP_FORCE_REFRESH', '')).strip().lower() in {'1', 'true', 'yes'}
+                ) or bool(market_scope.get('force_refresh', False))
+                filters = market_scope.get('filters') if isinstance(market_scope, dict) else None
+                exchanges = market_scope.get('exchanges') if isinstance(market_scope, dict) else None
+
+                cache_root = self.raw_dir.parent
+                if self.raw_dir.name.lower() == 'raw':
+                    cache_root = self.raw_dir.parent
+                elif self.raw_dir.parent.name.lower() == 'raw':
+                    cache_root = self.raw_dir.parent.parent
+                scanner = MarketScanner(cache_dir=str(cache_root / 'cache'))
+                tickers = scanner.get_all_tickers(
+                    force_refresh=force_refresh,
+                    exchanges=exchanges if isinstance(exchanges, list) else None,
+                    filters=filters if isinstance(filters, dict) else None,
+                )
                 self.logger.info(
                     'Khởi chạy chế độ DYNAMIC - Quét toàn thị trường. Tổng số mã phát hiện: %s',
                     len(tickers),
                 )
-                return self.data_cleaner.normalize_symbols(tickers)
+
+                # Market Scope Filter: giảm số lượng mã cần xử lý (đặc biệt UPCOM) để tối ưu hiệu năng.
+                try:
+                    scope_config = MarketScopeConfig.from_config(self.config)
+                    listing_df = MarketScopeFilter.load_listing_dataframe(source='vci')
+                    tickers = MarketScopeFilter(scope_config).filter_symbols(
+                        listing_df,
+                        universe_symbols=tickers,
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        'Không áp dụng được Market Scope Filter, dùng danh sách gốc: %s',
+                        exc,
+                    )
+
+                valid_symbols, removed = validate_and_filter_symbols(tickers)
+                removed_log_limit = int(market_scope.get('removed_symbols_log_limit', 200))
+                for item in removed[:removed_log_limit]:
+                    self.logger.warning(
+                        'Bỏ qua symbol %s: %s', item.get('symbol'), item.get('reason')
+                    )
+                if len(removed) > removed_log_limit:
+                    self.logger.warning(
+                        '... và còn %s symbols bị loại bỏ khác (giới hạn log=%s).',
+                        len(removed) - removed_log_limit,
+                        removed_log_limit,
+                    )
+                self.logger.info('✓ Còn %s symbols hợp lệ sau khi lọc', len(valid_symbols))
+                if not valid_symbols:
+                    self.logger.error(
+                        '🚨 Tất cả symbols đều không hợp lệ! Fallback về MANUAL mode'
+                    )
+                    fallback = market_scope.get('symbols') or self.config.get('symbols') or [
+                        'VNM',
+                        'MWG',
+                    ]
+                    valid_fallback, removed_fallback = validate_and_filter_symbols(fallback)
+                    for item in removed_fallback[:removed_log_limit]:
+                        self.logger.warning(
+                            'Bỏ qua symbol %s (fallback MANUAL): %s',
+                            item.get('symbol'),
+                            item.get('reason'),
+                        )
+                    if not valid_fallback:
+                        raise RuntimeError(
+                            'Không có symbol hợp lệ ở fallback MANUAL sau khi lọc.'
+                        )
+                    self.logger.info(
+                        'Khởi chạy chế độ MANUAL - Danh sách tùy chỉnh. Số lượng mã: %s',
+                        len(valid_fallback),
+                    )
+                    return valid_fallback
+                return valid_symbols
             except Exception as exc:
                 self.logger.error('Lỗi MarketScanner ở chế độ DYNAMIC: %s', exc)
                 fallback = market_scope.get('symbols') or self.config.get('symbols') or []
                 if fallback:
-                    normalized = self.data_cleaner.normalize_symbols(fallback)
+                    valid_fallback, removed_fallback = validate_and_filter_symbols(fallback)
+                    for item in removed_fallback:
+                        self.logger.warning(
+                            'Bỏ qua symbol %s (fallback MANUAL): %s',
+                            item.get('symbol'),
+                            item.get('reason'),
+                        )
+                    if not valid_fallback:
+                        raise RuntimeError(
+                            'Không có symbol hợp lệ ở fallback MANUAL sau khi lọc.'
+                        ) from exc
                     self.logger.warning(
                         'Fallback sang MANUAL list do lỗi DYNAMIC. Số lượng mã: %s',
-                        len(normalized),
+                        len(valid_fallback),
                     )
-                    return normalized
+                    return valid_fallback
                 raise RuntimeError(
                     f'Không thể chạy DYNAMIC và không có danh sách symbols fallback: {exc}'
                 ) from exc
 
         manual_symbols = market_scope.get('symbols') or self.config.get('symbols') or []
-        normalized = self.data_cleaner.normalize_symbols(manual_symbols)
+        valid_symbols, removed = validate_and_filter_symbols(manual_symbols)
+        for item in removed:
+            self.logger.warning(
+                'Bỏ qua symbol %s (MANUAL): %s', item.get('symbol'), item.get('reason')
+            )
+        if not valid_symbols:
+            self.logger.error('MANUAL mode không có symbol hợp lệ. Dùng fallback: VNM, MWG')
+            valid_symbols = ['VNM', 'MWG']
         self.logger.info(
             'Khởi chạy chế độ MANUAL - Danh sách tùy chỉnh. Số lượng mã: %s',
-            len(normalized),
+            len(valid_symbols),
         )
-        return normalized
+        return valid_symbols
 
     def run_daily_update(
         self,
@@ -113,10 +209,17 @@ class Pipeline:
 
         target_symbols = self._resolve_symbols(symbols)
         summary: List[Dict[str, Any]] = []
+        failed_symbols: List[str] = []
         start_date = self.config['start_date']
         end_date = self.config['end_date']
         resolution = self.config.get('resolution', '1D')
-        retry_count = int(self.config.get('retry', 3))
+        performance = self.config.get('performance') or {}
+        if parallel_workers is None:
+            try:
+                parallel_workers = int(performance.get('max_concurrent_requests'))
+            except Exception:
+                parallel_workers = None
+        retry_count = int(performance.get('max_retries', self.config.get('retry', 3)))
         if parallel_workers and parallel_workers > 1:
             with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
                 futures = {
@@ -136,6 +239,7 @@ class Pipeline:
                     except Exception as exc:  # pragma: no cover
                         self.logger.exception('Daily update failed cho %s', symbol)
                         self._notify(f'Daily update failed {symbol}: {exc}', severity='error')
+                        failed_symbols.append(symbol)
                         summary.append({'symbol': symbol, 'status': 'failed', 'error': str(exc)})
         else:
             for symbol in target_symbols:
@@ -149,13 +253,24 @@ class Pipeline:
                 except Exception as exc:  # pragma: no cover - orchestrator must continue
                     self.logger.exception('Daily update failed cho %s', symbol)
                     self._notify(f'Daily update failed {symbol}: {exc}', severity='error')
+                    failed_symbols.append(symbol)
                     summary.append({'symbol': symbol, 'status': 'failed', 'error': str(exc)})
-        total = len(summary)
-        failures = sum(1 for entry in summary if entry['status'] == 'failed')
+
+        total_symbols = len(target_symbols)
+        error_count = len(failed_symbols)
+        success_count = total_symbols - error_count
+        self.logger.info('=== PIPELINE SUMMARY ===')
+        self.logger.info('Tổng symbols: %s', total_symbols)
+        self.logger.info('Thành công: %s', success_count)
+        self.logger.info('Thất bại: %s', error_count)
+        self.logger.info('Symbols lỗi: %s', failed_symbols)
+
         return {
             'run': datetime.utcnow().isoformat(),
-            'total_symbols': total,
-            'failed': failures,
+            'total_symbols': total_symbols,
+            'successful': success_count,
+            'failed': error_count,
+            'failed_symbols': failed_symbols,
             'details': summary,
         }
 

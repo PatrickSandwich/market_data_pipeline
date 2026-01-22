@@ -1,0 +1,4 @@
+Project Root: D:\market_data_pipeline
+Generated Structure for Codex:
+----------------------------------------
+postmanchimcut/
